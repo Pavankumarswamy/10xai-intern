@@ -268,7 +268,7 @@ custom_css = """
 .introduction { font-size: 1.1em; margin-bottom: 1em; }
 """
 
-with gr.Blocks(title="AI Intern Assignments", css=custom_css) as demo:
+with gr.Blocks(title="AI Intern Assignments") as demo:
     gr.Markdown(f"""
     <div class="task-header">
         <h1>AI Intern - Unified Task Submission</h1>
@@ -341,4 +341,4 @@ with gr.Blocks(title="AI Intern Assignments", css=custom_css) as demo:
             t3_clr.click(lambda: ([], ""), None, [t3_chat, t3_msg])
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(server_name="0.0.0.0", server_port=7860, css=custom_css)
