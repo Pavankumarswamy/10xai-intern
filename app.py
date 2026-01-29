@@ -393,6 +393,21 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
                 t3_sub = gr.Button("Ask")
                 t3_clr = gr.Button("Clear Chat")
             
+            gr.Examples(
+                examples=[
+                    "What are the school timings?",
+                    "What is the fee structure?",
+                    "Tell me about the sports facilities.",
+                    "Is there a bus service?",
+                    "What are the admission requirements?",
+                    "Who acts as the guide for the students?",
+                    "Who is the principal?",
+                    "Do you offer extracurricular activities?"
+                ],
+                inputs=t3_msg,
+                label="Suggested Questions"
+            )
+            
             # Handler for chatbot
             def respond_t3(msg, hist):
                 if not msg.strip(): 
