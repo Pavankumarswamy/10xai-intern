@@ -190,14 +190,53 @@ def retrieve_context(query, index, chunks):
     return docs
 
 # ==========================================
+# SYSTEM PROMPTS
+# ==========================================
+TASK1_SYSTEM_PROMPT = """Act as a professional tutor and exam-oriented instructor.
+
+Answer questions based on their type:
+- For short-type questions: give a precise, to-the-point answer in 1–2 lines.
+- For long or brief questions: explain clearly in 5–6 lines with proper structure.
+
+Guidelines:
+- Use simple, professional language.
+- Be clear, factual, and easy to revise.
+- Avoid unnecessary filler or storytelling.
+- Focus on definitions, key points, and clarity.
+- Make answers suitable for exams and academic understanding.
+
+Maintain a calm, teacher-like tone in every response."""
+
+TASK2_SYSTEM_PROMPT = """Act as a professional tutor and exam-oriented instructor.
+
+The model must always identify itself as:
+"LUCA from 10X Technologies"
+
+Answer questions based on their type:
+- For short-type questions: give a precise, to-the-point answer in 1–2 lines.
+- For long or brief questions: explain clearly in 5–6 lines with proper structure.
+
+Guidelines:
+- Use simple, professional language.
+- Be clear, factual, and easy to revise.
+- Avoid unnecessary filler or storytelling.
+- Focus on definitions, key points, and clarity.
+- Make answers suitable for exams and academic understanding.
+
+Tone:
+- Calm, teacher-like, and professional.
+- Responses should reflect expertise and clarity."""
+
+# ==========================================
 # TASK HANDLERS
 # ==========================================
 
 # --- Task 1: Open Source Models ---
 def task1_text_response(message, history):
     messages = normalize_history(history)
-    # Add system prompt for Task 1
-    messages.insert(0, {"role": "system", "content": "You are a helpful AI assistant."})
+    # Add custom system prompt for Task 1
+    messages.insert(0, {"role": "system", "content": TASK1_SYSTEM_PROMPT})
+    
     # Ensure message is a clean string
     messages.append({"role": "user", "content": _force_string(message)})
     
@@ -208,26 +247,25 @@ def task1_text_response(message, history):
             content = chunk['message']['content']
             partial_response += content
             yield partial_response
+        return
     except Exception as e:
-        yield f"Error: {str(e)}"
-    return
+        yield f"Error: {e}"
 
-# Re-use TTS logic for Task 1 speech demo
+# --- Task 1B: Speech ---
 def task1_speech_response(audio_path):
-    if not audio_path: return None, "No audio provided."
+    if not audio_path: return None, "No audio detected."
     
-    # 1. Pipeline: Speech -> Text
     try:
-        res = whisper_model.transcribe(audio_path)
-        user_text = res["text"].strip()
-    except Exception as e:
-        return None, f"Transcription error: {e}"
+        # STT
+        transcribed = whisper_model.transcribe(audio_path)["text"].strip()
+    except: return None, "Error in transcription."
 
-    # 2. Pipeline: Text -> LLM
-    # call_ollama_non_stream expects messages list; ensure content is string
-    llm_response = call_ollama_non_stream([{"role": "user", "content": _force_string(user_text)}])
+    # Process via helper 
+    # Use Task 1 System Prompt
+    messages = [{"role": "system", "content": TASK1_SYSTEM_PROMPT}, {"role": "user", "content": transcribed}]
+    llm_response = call_ollama_non_stream(messages)
 
-    # 3. Pipeline: LLM -> Speech
+    # TTS
     async def get_tts(text):
         fd, path = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
@@ -241,17 +279,15 @@ def task1_speech_response(audio_path):
     except RuntimeError:
         audio_out = asyncio.get_event_loop().run_until_complete(get_tts(llm_response))
 
-    return audio_out, f"**User:** {user_text}\n\n**AI:** {llm_response}"
+    return audio_out, f"**User:** {transcribed}\n\n**AI:** {llm_response}"
 
 
 # --- Task 2: LUCA Assistant (Identity Enforced) ---
 def is_identity_question(text):
     """Check if the question is asking about identity."""
     import string
-    # Clean the text: lowercase, remove punctuation
     text_clean = text.lower().translate(str.maketrans('', '', string.punctuation)).strip()
     
-    # Check for identity keywords
     identity_patterns = [
         "who are you",
         "who r you", 
@@ -296,9 +332,10 @@ def task2_luca_handler(message, history, audio_path):
         print("DEBUG: Identity question detected! Returning LUCA identity.")
         response_text = LUCA_IDENTITY_TEXT
     else:
-        print("DEBUG: Regular question, calling LLM...")
-        # Standard chat
+        print("DEBUG: Regular question, calling LLM with LUCA Prompt...")
+        # Standard chat with System Prompt
         msgs = normalize_history(history)
+        msgs.insert(0, {"role": "system", "content": TASK2_SYSTEM_PROMPT})
         msgs.append({"role": "user", "content": user_input})
         response_text = call_ollama_non_stream(msgs)
 
