@@ -19,7 +19,7 @@ LLM_MODEL = "gemma3:1b"
 WHISPER_MODEL_SIZE = "tiny.en"
 TTS_VOICE = "en-US-AriaNeural"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-PDF_PATH = "school_information.pdf"
+DEFAULT_PDF_PATH = "school_information.pdf"
 
 # Task 2 Configuration
 LUCA_IDENTITY_TEXT = "I am LUCA from 10X Technologies."
