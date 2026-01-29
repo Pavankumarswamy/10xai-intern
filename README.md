@@ -20,15 +20,16 @@ cd 10xai-intern
 
 ### Step 2: Build the Docker Image
 ```bash
+# This build step downloads the LLM model (2GB) and bakes it into the image.
+# It may take a few minutes, but ensures subsequent runs are instant.
 docker build -t ai-intern-agent .
 ```
-*Note: The build process sets up Python 3.10 and installs necessary dependencies (ffmpeg, transformers, ollama, etc).*
 
 ### Step 3: Run the Container
 ```bash
 docker run -p 7860:7860 ai-intern-agent
 ```
-*Note: On the first run, the container will automatically pull the `gemma3:1b` model. This may take a few minutes depending on your internet connection.*
+*The application starts instantly as the model is pre-loaded.*
 
 ### Step 4: Access the Application
 Open your browser and navigate to:
@@ -52,42 +53,42 @@ The application is built as a single-container microservice exposing a Gradio we
 
 ### Workflow by Task
 
-#### 1. Task 1: Text Chat
-- **Input**: User types text.
-- **Process**: Text sent to Ollama (`gemma3:1b`).
-- **Output**: Streaming text response.
+#### 1. Task 1: Open Source Models
+- **Text Sub-Task**: Chat interacts directly with Gemma 3 (streaming enabled).
+- **Speech Sub-Task**: 
+  - **Input**: User Audio → Whisper Transcribe.
+  - **Logic**: Transcript → Gemma 3.
+  - **Output**: Response → Edge TTS → Audio Playback.
 
 #### 2. Task 2: Speech-to-Speech (LUCA)
-- **Input**: User speaks into microphone.
-- **Process**: 
-  1. **Whisper** converts Audio → Text.
-  2. Identity Check: If asking "Who are you?", responds as "LUCA from 10X Technologies".
-  3. **Ollama** generates response text.
-  4. **Edge-TTS** converts Response Text → Audio.
-- **Output**: Audio playback + Text transcript.
+- **Identity Enforcement**: The system strictly overrides answers to "Who are you?" with: *"I am LUCA from 10X Technologies."*
+- **Workflow**:
+  - Supports both **Voice** and **Text** input.
+  - Uses Whisper for transcription.
+  - Uses Gemma 3 for general conversation.
+  - Returns both Audio (TTS) and Text response.
 
 #### 3. Task 3: School Info (RAG)
-- **Input**: User asks a question about the school.
-- **Process**:
-  1. PDF (`school_information.pdf`) is chunked and embedded (on startup).
-  2. User query is embedded and matched against chunks using FAISS.
-  3. Relevant chunks + Query are sent to Ollama.
-  4. Model answers **strictly** based on context.
-- **Output**: Accurate answer or "I don't know" if outside scope.
+- **Domain Constraint**: Answers **strictly** based on `school_information.pdf`.
+- **Logic**:
+  1. PDF is ingested & chunked on startup.
+  2. Queries are matched via FAISS vector search.
+  3. If relevant chunks are found: LLM answers using *only* that context.
+  4. If no relevance: Returns *"I don't know"*.
 
 ### Design Decisions
-1. **Unified Docker Container**: To simplify deployment, all services (Ollama, Python App, Vector Store) run inside one container.
-2. **Gemma 3 (1B)**: Chosen as the LLM to balance performance and memory usage for a local dockerized environment.
-3. **FAISS CPU**: Used for vector search to avoid heavy dependencies like ChromaDB/Pinecone for this scale.
+1. **Model Baking**: The `gemma3:1b` model is pulled during the Docker `build` phase. This increases build time but makes the container startup nearly instantaneous and robust offline.
+2. **Unified Docker Container**: All dependencies (Ollama, Python, ffmpeg) are packaged together for portability.
+3. **Streaming Responses**: Task 1 and Task 3 utilize text streaming to provide better user feedback during inference.
 
 ---
 
 ## ⚠️ Known Limitations & Incomplete Areas
 
-1. **First-Run Latency**: The application downloads the LLM (~2GB) and Embedding models on the very first run, causing a startup delay.
-2. **Audio Processing**: Whisper `tiny.en` is fast but may struggle with accents compared to larger models.
-3. **Persistence**: Chat history is ephemeral and clears when the browser refresh or container restarts.
-4. **PDF Handling**: Currently supports a single hardcoded PDF (`school_information.pdf`). Dynamic upload is not implemented in this version.
+1. **Build Time**: The initial `docker build` takes time due to model downloads (~2-3GB total for LLM + Base Image).
+2. **Audio Processing**: Whisper `tiny.en` is lightweight but may have lower accuracy on non-native accents compared to larger models.
+3. **Persistence**: Chat history is session-based and clears on page refresh.
+4. **Single PDF**: The RAG system is designed for a specific `school_information.pdf` included in the image.
 
 ---
 **Author**: Pavan Kumar Swamy
