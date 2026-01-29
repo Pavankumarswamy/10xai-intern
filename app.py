@@ -11,6 +11,18 @@ import faiss
 import PyPDF2
 from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+import sys
+
+# Add Translatotron to path
+sys.path.append(os.path.join(os.path.dirname(__file__), "translatotron_src"))
+try:
+    from translatotron.translatotron import Translatotron
+    from torchaudio import transforms as T
+    import torchaudio
+    TRANSLATOTRON_AVAILABLE = True
+except Exception as e:
+    print(f"Translatotron import failed: {e}")
+    TRANSLATOTRON_AVAILABLE = False
 
 # ==========================================
 # CONFIGURATION
@@ -21,15 +33,14 @@ TTS_VOICE = "en-US-AriaNeural"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 DEFAULT_PDF_PATH = "school_information.pdf"
 
-# Task 2 Configuration
+# Task 2 Configuration (Restored)
 LUCA_IDENTITY_TEXT = "I am LUCA from 10X Technologies."
-# Note: System prompts are used for style, but identity is enforced via code logic.
 
 # Task 3 Configuration
-CHUNK_SIZE = 600
-CHUNK_OVERLAP = 120
-SIMILARITY_THRESHOLD = 0.1  # Lowered for better retrieval
-REJECTION_RESPONSE = "I couldn't find that specific information in the documents provided."
+CHUNK_SIZE = 1000  # Increased for better context capture
+CHUNK_OVERLAP = 200
+SIMILARITY_THRESHOLD = 0.35  # Broader retrieval, relying on strict LLM filtering
+REJECTION_RESPONSE = "I am not aware."
 
 # ==========================================
 # MODEL LOADING
@@ -51,6 +62,19 @@ try:
 except Exception as e:
     print(f"Error loading Embedder: {e}")
     embedder = None
+
+# 3. Translatotron (Task 1B)
+print("Loading Translatotron...")
+translatotron_model = None
+mel_converter = None
+if TRANSLATOTRON_AVAILABLE:
+    try:
+        translatotron_model = Translatotron()
+        translatotron_model.eval()
+        # Mel spectrogram converter (matches train.py config)
+        mel_converter = T.MelSpectrogram(sample_rate=16000, n_fft=1024, hop_length=256, n_mels=80)
+    except Exception as e:
+        print(f"Error initializing Translatotron: {e}")
 
 # ==========================================
 # UTILS & HELPERS
@@ -257,43 +281,95 @@ def retrieve_context(query, index, chunks):
     
     return [chunks[i] for i in final_indices]
 
+def perform_calculation_on_text(query, context_text):
+    """
+    Analyzes the query and context to perform calculations if requested.
+    Returns a system note string with the result, or empty string.
+    """
+    query_lower = query.lower()
+    operation = None
+    
+    if "average" in query_lower or "mean" in query_lower:
+        operation = "average"
+    elif "sum" in query_lower or "total" in query_lower:
+        operation = "sum"
+    elif "max" in query_lower or "highest" in query_lower:
+        operation = "max"
+    elif "min" in query_lower or "lowest" in query_lower:
+        operation = "min"
+    
+    if not operation:
+        return ""
+
+    print(f"DEBUG: Calculation requested ({operation}) for query: '{query}'")
+
+    # specific extraction prompt
+    extraction_prompt = f"""
+    Analyze the text below and extract all numerical values that match the user's query regarding "{query}".
+    - Ignore dates, years (like 2023), or phone numbers.
+    - EXTRACT ONLY the specific values (e.g., marks, fees, scores).
+    - Return ONLY the numbers separated by commas.
+    - If no relevant numbers are found, return NOTHING.
+    
+    Context:
+    {context_text}
+    """
+    
+    try:
+        # Re-use the existing helper
+        extracted_text = call_ollama_non_stream([{"role": "user", "content": extraction_prompt}])
+        
+        # Parse numbers using regex
+        matches = re.findall(r"[-+]?\d*\.\d+|\d+", extracted_text)
+        # Filter out likely years/dates if they look like integers > 1900 and < 2100? 
+        # Actually proper prompting is better. Let's rely on the LLM + regex.
+        
+        numbers = []
+        for m in matches:
+             try:
+                 val = float(m)
+                 # Simple heuristic to avoid years if the query is about marks (0-100 usually)
+                 # But fees could be large. Let's trust the LLM's extraction for now.
+                 numbers.append(val)
+             except:
+                 pass
+        
+        if not numbers:
+            print("DEBUG: No numbers found for calculation.")
+            return ""
+
+        result = 0
+        op_name = ""
+        
+        if operation == "average":
+            result = sum(numbers) / len(numbers)
+            op_name = "Average"
+        elif operation == "sum":
+            result = sum(numbers)
+            op_name = "Sum"
+        elif operation == "max":
+            result = max(numbers)
+            op_name = "Maximum"
+        elif operation == "min":
+            result = min(numbers)
+            op_name = "Minimum"
+            
+        print(f"DEBUG: Calculated {op_name}: {result} from {numbers}")
+        
+        return (f"\n[SYSTEM: The user asked for a calculation. "
+                f"I have extracted the following values from the text: {numbers}. "
+                f"The calculated {op_name} is {result:.2f}. "
+                f"State this result clearly in your answer.]\n")
+
+    except Exception as e:
+        print(f"Error during calculation: {e}")
+        return ""
+
 # ==========================================
 # SYSTEM PROMPTS
 # ==========================================
-TASK1_SYSTEM_PROMPT = """Act as a professional tutor and exam-oriented instructor.
+# System prompts removed as per requirement.
 
-Answer questions based on their type:
-- For short-type questions: give a precise, to-the-point answer in 1–2 lines.
-- For long or brief questions: explain clearly in 5–6 lines with proper structure.
-
-Guidelines:
-- Use simple, professional language.
-- Be clear, factual, and easy to revise.
-- Avoid unnecessary filler or storytelling.
-- Focus on definitions, key points, and clarity.
-- Make answers suitable for exams and academic understanding.
-
-Maintain a calm, teacher-like tone in every response."""
-
-TASK2_SYSTEM_PROMPT = """Act as a professional tutor and exam-oriented instructor.
-
-The model must always identify itself as:
-"LUCA from 10X Technologies"
-
-Answer questions based on their type:
-- For short-type questions: give a precise, to-the-point answer in 1–2 lines.
-- For long or brief questions: explain clearly in 5–6 lines with proper structure.
-
-Guidelines:
-- Use simple, professional language.
-- Be clear, factual, and easy to revise.
-- Avoid unnecessary filler or storytelling.
-- Focus on definitions, key points, and clarity.
-- Make answers suitable for exams and academic understanding.
-
-Tone:
-- Calm, teacher-like, and professional.
-- Responses should reflect expertise and clarity."""
 
 # ==========================================
 # TASK HANDLERS
@@ -302,8 +378,7 @@ Tone:
 # --- Task 1: Open Source Models ---
 def task1_text_response(message, history):
     messages = normalize_history(history)
-    # Add custom system prompt for Task 1
-    messages.insert(0, {"role": "system", "content": TASK1_SYSTEM_PROMPT})
+    # System prompt removed
     
     # Ensure message is a clean string
     messages.append({"role": "user", "content": _force_string(message)})
@@ -329,8 +404,8 @@ def task1_speech_response(audio_path):
     except: return None, "Error in transcription."
 
     # Process via helper 
-    # Use Task 1 System Prompt
-    messages = [{"role": "system", "content": TASK1_SYSTEM_PROMPT}, {"role": "user", "content": transcribed}]
+    # System prompt removed
+    messages = [{"role": "user", "content": transcribed}]
     llm_response = call_ollama_non_stream(messages)
 
     # Clean response for TTS (remove markdown and emojis)
@@ -353,28 +428,83 @@ def task1_speech_response(audio_path):
     return audio_out, f"**User:** {transcribed}\n\n**AI:** {llm_response}"
 
 
+# --- Task 1B [NEW]: Direct Speech-to-Speech (Translatotron) ---
+def task1_translatotron_response(audio_path):
+    if not TRANSLATOTRON_AVAILABLE or translatotron_model is None:
+        return None, "Translatotron model not available."
+        
+    if not audio_path:
+        return None, "No audio input."
+
+    try:
+        # 1. Load Audio
+        waveform, sample_rate = torchaudio.load(audio_path)
+        
+        # 2. Resample to 16k if needed
+        if sample_rate != 16000:
+            resampler = T.Resample(sample_rate, 16000)
+            waveform = resampler(waveform)
+            
+        # 3. Mixing to mono if stereo
+        if waveform.shape[0] > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+            
+        # 4. Generate Mel Spectrogram
+        # Input to mel_converter: (channel, time) -> Output: (channel, n_mels, time)
+        mel = mel_converter(waveform)
+        
+        # 5. Prepare for Model
+        # Model expects (batch, time, n_mels)
+        # Current mel is (1, 80, time) -> Permute to (1, time, 80)
+        input_mel = mel.permute(0, 2, 1)
+        
+        # 6. Inference
+        with torch.no_grad():
+            output_waveform, _, _, _ = translatotron_model(input_mel)
+            # output_waveform is (batch, channels, time) -> (1, 1, time) usually from GriffinLim
+            
+        # 7. Save output
+        out_wav = output_waveform.squeeze().cpu().numpy()
+        
+        fd, path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        
+        # Helper to save (using scipy or soundfile, checking what's available)
+        import soundfile as sf
+        sf.write(path, out_wav, 16000)
+        
+        return path, "Processing complete via Translatotron (Direct S2S)."
+        
+    except Exception as e:
+        print(f"Translatotron Error: {e}")
+        return None, f"Error processing audio: {e}"
+
+
 # --- Task 2: LUCA Assistant (Identity Enforced) ---
 def is_identity_question(text):
-    """Check if the question is asking about identity."""
-    import string
-    text_clean = text.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+    """Check if the question is asking about identity using regex."""
+    text_clean = text.lower().strip()
     
-    identity_patterns = [
-        "who are you",
-        "who r you", 
-        "what are you",
-        "who made you",
-        "who created you",
-        "who developed you",
-        "who built you",
-        "what is your name",
-        "whats your name",
-        "tell me about yourself"
+    # Regex patterns for more robust matching
+    patterns = [
+        r"who\s+(are|r)\s+you",
+        r"what\s+are\s+you",
+        r"who\s+(made|created|built|developed|designed)\s+you",
+        r"(what.?s|what\s+is)\s+your\s+name",
+        r"(tell|say)\s+.*your\s+name",
+        r"call\s+you",
+        r"tell\s+me\s+about\s+yourself",
+        r"introduce\s+yourself",
+        r"your\s+identity"
     ]
     
-    is_identity = any(pattern in text_clean for pattern in identity_patterns)
-    print(f"DEBUG Identity Check: '{text}' -> cleaned: '{text_clean}' -> is_identity: {is_identity}")
-    return is_identity
+    for pattern in patterns:
+        if re.search(pattern, text_clean):
+            print(f"DEBUG Identity Check: MATCHED pattern '{pattern}' in '{text_clean}'")
+            return True
+            
+    print(f"DEBUG Identity Check: NO MATCH for '{text_clean}'")
+    return False
 
 # --- Task 2: LUCA Assistant (Text Chat) ---
 def task2_text_chat(message, history):
@@ -392,9 +522,9 @@ def task2_text_chat(message, history):
         yield LUCA_IDENTITY_TEXT
         return
     
-    # Standard chat with System Prompt
+    # Standard chat (No System Prompt)
     msgs = normalize_history(history)
-    msgs.insert(0, {"role": "system", "content": TASK2_SYSTEM_PROMPT})
+    
     msgs.append({"role": "user", "content": user_input})
     
     try:
@@ -427,7 +557,6 @@ def task2_voice_handler(audio_path):
     else:
         print("DEBUG: Regular question, calling LLM with LUCA Prompt...")
         messages = [
-            {"role": "system", "content": TASK2_SYSTEM_PROMPT},
             {"role": "user", "content": transcribed}
         ]
         response_text = call_ollama_non_stream(messages)
@@ -497,21 +626,22 @@ def task3_rag_response(message, history, rag_state):
 
     context_str = "\n\n".join([f"Excerpt {idx+1}:\n{d}" for idx, d in enumerate(docs)])
     print(f"DEBUG: LLM Context ({len(docs)} chunks)\n")
+    
+    # Check for calculation
+    calc_note = perform_calculation_on_text(message, context_str)
 
     prompt = (
-        "You are a helpful school assistant. Read the following excerpts CAREFULLY.\n"
-        "Answer the user's question using ONLY the information from these excerpts.\n\n"
-        "IMPORTANT RULES:\n"
-        "- Read each excerpt carefully before answering\n"
-        "- Do NOT mix information from different sections\n"
-        "- If asked about attendance, look for 'Attendance' or '75%'\n"
-        "- If asked about mobile phones, look for 'Mobile phones' or 'phone'\n"
-        "- If asked about fees, look for 'Fee Structure' or specific fee amounts\n"
-        "- If the exact answer is not in the excerpts, say 'I don't have that information'\n"
-        "- Be precise and quote the relevant section when possible\n\n"
-        f"Excerpts:\n{context_str}\n\n"
-        f"Question: {message}\n\n"
-        "Answer (be specific and accurate):"
+        "You are a strictly factual assistant. Use ONLY the provided context excerpts to answer the question.\n\n"
+        "CONTEXT:\n"
+        f"{context_str}\n\n"
+        f"QUESTION: {message}\n"
+        f"{calc_note}\n\n"
+        "STRICT INSTRUCTIONS:\n"
+        "1. **Analyze & Reason**: The answer may not be in a single sentence. Combine information from different parts of the context context to form a complete answer.\n"
+        "2. **Logical Inference**: You can infer answers (e.g., calculating totals, comparing values) ONLY if the data supports it.\n"
+        "3. **Evidence**: Support your answer with specific facts or numbers from the text.\n"
+        "4. **Strict Boundary**: If the information is missing or cannot be logically inferred from the context, YOU MUST REPLY: 'I am not aware.'\n"
+        "5. **No Outside Knowledge**: Do not use external facts (e.g., general world knowledge) not present in the excerpts."
     )
     
     # Use streaming
@@ -555,12 +685,27 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
             with gr.Accordion("Sub-Task A: Text-to-Text Model (Gemma 3)", open=True):
                 gr.ChatInterface(task1_text_response, title="Text Model Demo")
             
-            with gr.Accordion("Sub-Task B: Speech-to-Speech Model (Whisper + EdgeTTS)", open=False):
+            with gr.Accordion("Sub-Task B: Direct Speech-to-Speech (Translatotron)", open=False):
+                gr.Markdown("""
+                **Model**: Translatotron (End-to-End Direct Speech-to-Speech)
+                **Status**: Research Architecture Demo (Random Weights)
+                **Note**: Since this is a raw model architecture without pre-trained weights for a specific language pair, the output will be processed audio noise/gibberish. This demonstrates the *pipeline execution* of a direct S2S model as requested.
+                """)
+                with gr.Row():
+                    t1b_audio_in = gr.Audio(sources=["microphone", "upload"], type="filepath", label="Input Audio")
+                    t1b_audio_out = gr.Audio(label="Direct S2S Output", autoplay=True)
+                t1b_status = gr.Markdown(label="Status")
+                t1b_btn = gr.Button("Run Translatotron")
+                
+                t1b_btn.click(task1_translatotron_response, t1b_audio_in, [t1b_audio_out, t1b_status])
+
+            with gr.Accordion("Sub-Task C: Pipeline Speech-to-Speech (Whisper + Gemma + EdgeTTS)", open=False):
+                gr.Markdown("**Legacy Approach**: Uses STT -> LLM -> TTS pipeline.")
                 with gr.Row():
                     t1_audio_in = gr.Audio(sources=["microphone", "upload"], type="filepath", label="Input Audio")
                     t1_audio_out = gr.Audio(label="Output Audio", autoplay=True)
                 t1_transcript = gr.Markdown(label="Transcript")
-                t1_btn = gr.Button("Run Speech Pipeline")
+                t1_btn = gr.Button("Run Pipeline")
                 
                 t1_btn.click(task1_speech_response, t1_audio_in, [t1_audio_out, t1_transcript])
 

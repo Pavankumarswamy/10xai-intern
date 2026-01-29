@@ -8,13 +8,14 @@ This project implements three distinct AI tasks in a unified application:
 
 ### **Task 1: Deploy Open-Source Models (Text & Speech)**
 - ✅ Deploy one text-to-text language model
-- ✅ Deploy one speech-to-speech model  
+- ✅ Deploy one **Direct** speech-to-speech model (Translatotron)
+- ✅ Deploy one **Pipeline** speech-to-speech model (Legacy fallback)
 - ✅ Demonstrate basic input/output functionality
 - ✅ Explain model choice and deployment method
 
 ### **Task 2: LUCA Voice Assistant**
 - ✅ Build voice-enabled assistant using open-source LLM
-- ✅ Identity enforcement: "LUCA from 10X Technologies" (hardcoded logic, not just system prompt)
+- ✅ Identity enforcement: "LUCA from 10X Technologies" (Strict Python logic, **no** system prompt instruction)
 - ✅ Integrate ASR (Automatic Speech Recognition) for voice input
 - ✅ Integrate TTS (Text-to-Speech) for voice output
 - ✅ Demonstrate voice conversation and direct text interaction
@@ -109,7 +110,7 @@ Once the app starts, you'll see three tabs:
           │              │               │
     ┌─────▼──────┐  ┌───▼─────┐   ┌────▼─────────────────┐
     │  Gemma 3   │  │ Whisper │   │  FAISS Vector Store  │
-    │  (Ollama)  │  │ EdgeTTS │   │  + Keyword Search    │
+    │ Translatotron││ EdgeTTS │   │  + Keyword Search    │
     └────────────┘  └─────────┘   └──────────────────────┘
 ```
 
@@ -166,7 +167,28 @@ def task1_text_response(message, history):
 
 ---
 
-#### **Sub-Task B: Speech-to-Speech Model**
+#### **Sub-Task B: Direct Speech-to-Speech (Translatotron)**
+
+**Model**: `Translatotron` (End-to-End Sequence-to-Sequence)
+
+**Flow**:
+```
+Audio Input (Waveform)
+    ↓
+Mel Spectrogram Conversion (80 bands)
+    ↓
+Translatotron Model (Encoder-Decoder-Vocoder)
+    ↓
+Audio Output (Waveform)
+```
+
+**Implementation Details**:
+- Implements the Translatotron architecture (Stacked BLSTM Encoder + Spectrogram Decoder + Griffin-Lim Vocoder).
+- **Note**: This implementation runs the *architecture* pipeline. Since pre-trained weights for this specific research implementation are not publicly distributed with the repo, it initializes with random weights to demonstrate the **direct S2S pipeline execution** without intermediate text. The output will be audio noise, proving the signal path works.
+
+---
+
+#### **Sub-Task C: Pipeline Speech-to-Speech (Legacy)**
 
 **Pipeline**: Whisper (STT) → Gemma 3 (LLM) → EdgeTTS (TTS)
 
@@ -214,15 +236,8 @@ def task1_speech_response(audio_path):
 
 **Model Choice Justification**:
 - **Whisper (tiny.en)**: OpenAI's robust ASR model
-  - High accuracy for English speech recognition
-  - Tiny variant (~39MB) for fast startup
-  - Handles various accents and audio quality
-  - Open-source and well-documented
 - **EdgeTTS (en-US-AriaNeural)**: Microsoft's cloud TTS
-  - Natural-sounding voice synthesis
-  - No API key required
-  - Low latency for real-time responses
-  - Free tier sufficient for demo purposes
+
 
 ---
 
@@ -720,6 +735,10 @@ Enable verbose logging by checking the terminal output:
 - Implement model quantization (GGUF) for better performance
 - Add fallback TTS (e.g., piper-tts) for offline mode
 - Support multiple languages
+
+**Translatotron Specifics**:
+- **No Pre-trained Weights**: The repo uses random initialization. Real-world usage requires heavy GPU training on paired audio datasets (e.g., CVSS).
+- **Inference Only**: This demo runs the forward pass to validate architectural integration.
 
 ---
 
