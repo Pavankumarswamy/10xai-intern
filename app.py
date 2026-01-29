@@ -228,22 +228,34 @@ def task2_luca_handler(message, history, audio_path):
 def task3_rag_response(message, history):
     if not vector_store:
          # Fallback default behavior
-        return "School PDF not loaded. Please ensure 'school_information.pdf' is in the container."
+        yield "School PDF not loaded or processed correctly."
+        return
 
     docs = retrieve_context(message)
     if not docs:
-        response = REJECTION_RESPONSE
-    else:
-        context_str = "\n\n".join([f"Excerpt: {d}" for d in docs])
-        prompt = (
-            "You are a school assistant. Answer ONLY based on the excerpts.\n"
-            "If the question is unrelated, strictly say 'I don't know'.\n"
-            f"Excerpts:\n{context_str}\n\n"
-            f"Question: {message}"
-        )
-        response = call_ollama_non_stream([{"role": "user", "content": prompt}])
-        
-    return response
+        yield REJECTION_RESPONSE
+        return
+
+    context_str = "\n\n".join([f"Excerpt: {d}" for d in docs])
+    prompt = (
+        "You are a school assistant provided with the following school information excerpts.\n"
+        "Answer the question using strictly ONLY the information from these excerpts.\n"
+        "If the answer is not in the excerpts, say 'I don't know'.\n\n"
+        f"Excerpts:\n{context_str}\n\n"
+        f"Question: {message}"
+    )
+    
+    # Use streaming
+    try:
+        messages = [{"role": "user", "content": prompt}]
+        stream = ollama.chat(model=LLM_MODEL, messages=messages, stream=True)
+        partial_response = ""
+        for chunk in stream:
+            content = chunk['message']['content']
+            partial_response += content
+            yield partial_response
+    except Exception as e:
+        yield f"Error: {e}"
 
 def task3_clear_chat():
     return [], ""
@@ -311,11 +323,18 @@ with gr.Blocks(title="AI Intern Assignments", css=custom_css) as demo:
                 t3_sub = gr.Button("Ask")
                 t3_clr = gr.Button("Clear Chat")
             
+            # Generator wrapper for chatbot
             def respond_t3(msg, hist):
-                if not msg.strip(): return "", hist
-                ans = task3_rag_response(msg, hist)
-                hist.append((msg, ans))
-                return "", hist
+                if not msg.strip(): yield "", hist; return
+                
+                # Append user message first
+                hist.append((msg, ""))
+                yield "", hist
+                
+                # Stream response
+                for partial in task3_rag_response(msg, hist):
+                    hist[-1] = (msg, partial)
+                    yield "", hist
             
             t3_msg.submit(respond_t3, [t3_msg, t3_chat], [t3_msg, t3_chat])
             t3_sub.click(respond_t3, [t3_msg, t3_chat], [t3_msg, t3_chat])
