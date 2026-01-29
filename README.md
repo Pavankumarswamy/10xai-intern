@@ -6,6 +6,7 @@ colorTo: indigo
 sdk: docker
 pinned: false
 app_port: 7860
+app_file: app.py
 ---
 
 # Unified AI Assistant
