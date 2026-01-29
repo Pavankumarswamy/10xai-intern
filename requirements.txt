@@ -1,0 +1,12 @@
+ollama
+openai-whisper
+torch
+torchaudio
+soundfile
+edge-tts
+gradio
+sentence-transformers
+faiss-cpu
+langchain-text-splitters
+pypdf2
+numpy
