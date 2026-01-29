@@ -217,8 +217,28 @@ def task1_speech_response(audio_path):
 
 # --- Task 2: LUCA Assistant (Identity Enforced) ---
 def is_identity_question(text):
-    text = text.lower()
-    return any(k in text for k in ["who are you", "who made you", "created you", "developed you"])
+    """Check if the question is asking about identity."""
+    import string
+    # Clean the text: lowercase, remove punctuation
+    text_clean = text.lower().translate(str.maketrans('', '', string.punctuation)).strip()
+    
+    # Check for identity keywords
+    identity_patterns = [
+        "who are you",
+        "who r you", 
+        "what are you",
+        "who made you",
+        "who created you",
+        "who developed you",
+        "who built you",
+        "what is your name",
+        "whats your name",
+        "tell me about yourself"
+    ]
+    
+    is_identity = any(pattern in text_clean for pattern in identity_patterns)
+    print(f"DEBUG Identity Check: '{text}' -> cleaned: '{text_clean}' -> is_identity: {is_identity}")
+    return is_identity
 
 def task2_luca_handler(message, history, audio_path):
     # 1. Input Processing
@@ -232,6 +252,7 @@ def task2_luca_handler(message, history, audio_path):
             if transcribed:
                 user_input = transcribed
                 transcribed_from_audio = True
+                print(f"DEBUG: Transcribed audio: '{user_input}'")
         except Exception as e:
             return f"Transcription error: {str(e)}", None, None
     
@@ -239,10 +260,14 @@ def task2_luca_handler(message, history, audio_path):
     if not user_input:
         return "Please say or type something.", None, None
 
-    # 2. Logic & Identity Check (Hardcoded override)
+    print(f"DEBUG: Processing input: '{user_input}'")
+    
+    # 2. Logic & Identity Check (Hardcoded override) - THIS MUST HAPPEN FIRST
     if is_identity_question(user_input):
+        print("DEBUG: Identity question detected! Returning LUCA identity.")
         response_text = LUCA_IDENTITY_TEXT
     else:
+        print("DEBUG: Regular question, calling LLM...")
         # Standard chat
         msgs = normalize_history(history)
         msgs.append({"role": "user", "content": user_input})
