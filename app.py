@@ -72,9 +72,10 @@ def normalize_history(history):
             messages.append(item)
     return messages
 
-def call_ollama(messages):
+# Helper for non-streaming calls (Tasks 2 & 3)
+def call_ollama_non_stream(messages):
     try:
-        response = ollama.chat(model=LLM_MODEL, messages=messages)
+        response = ollama.chat(model=LLM_MODEL, messages=messages, stream=False)
         return response['message']['content']
     except Exception as e:
         return f"Error communicating with Ollama: {str(e)}"
@@ -133,8 +134,19 @@ def retrieve_context(query):
 # --- Task 1: Open Source Models ---
 def task1_text_response(message, history):
     messages = normalize_history(history)
+    # Add system prompt for Task 1
+    messages.insert(0, {"role": "system", "content": "You are a helpful AI assistant."})
     messages.append({"role": "user", "content": message})
-    return call_ollama(messages)
+    
+    try:
+        stream = ollama.chat(model=LLM_MODEL, messages=messages, stream=True)
+        partial_response = ""
+        for chunk in stream:
+            content = chunk['message']['content']
+            partial_response += content
+            yield partial_response
+    except Exception as e:
+        yield f"Error: {str(e)}"
 
 # Re-use TTS logic for Task 1 speech demo
 def task1_speech_response(audio_path):
@@ -148,7 +160,7 @@ def task1_speech_response(audio_path):
         return None, f"Transcription error: {e}"
 
     # 2. Pipeline: Text -> LLM
-    llm_response = call_ollama([{"role": "user", "content": user_text}])
+    llm_response = call_ollama_non_stream([{"role": "user", "content": user_text}])
 
     # 3. Pipeline: LLM -> Speech
     async def get_tts(text):
@@ -193,7 +205,7 @@ def task2_luca_handler(message, history, audio_path):
         # Standard chat
         msgs = normalize_history(history)
         msgs.append({"role": "user", "content": user_input})
-        response_text = call_ollama(msgs)
+        response_text = call_ollama_non_stream(msgs)
 
     # 3. Output Processing (TTS)
     async def get_tts(text):
@@ -229,7 +241,7 @@ def task3_rag_response(message, history):
             f"Excerpts:\n{context_str}\n\n"
             f"Question: {message}"
         )
-        response = call_ollama([{"role": "user", "content": prompt}])
+        response = call_ollama_non_stream([{"role": "user", "content": prompt}])
         
     return response
 
