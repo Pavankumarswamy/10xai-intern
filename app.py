@@ -387,7 +387,7 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
             gr.Markdown("### RAG-Based School Assistant")
             gr.Markdown("Objective: Answer domain-specific questions from the School PDF. Rejects unrelated queries.")
             
-            t3_chat = gr.Chatbot(height=500, label="School Bot", type="messages")
+            t3_chat = gr.Chatbot(height=500, label="School Bot")
             t3_msg = gr.Textbox(label="Question", placeholder="Ask about school fees, timings, etc.")
             with gr.Row():
                 t3_sub = gr.Button("Ask")
@@ -407,12 +407,9 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
                 for partial in task3_rag_response(msg, hist):
                     full_response = partial
                 
-                # Append to history in messages format
-                new_hist = hist + [
-                    {"role": "user", "content": msg},
-                    {"role": "assistant", "content": full_response}
-                ]
-                
+                # Append to history in tuple format: [[user, bot], ...]
+                # This is the standard Gradio format compatible with all versions
+                new_hist = hist + [[msg, full_response]]
                 return new_hist
             
             t3_msg.submit(respond_t3, [t3_msg, t3_chat], [t3_chat])
