@@ -28,8 +28,8 @@ LUCA_IDENTITY_TEXT = "I am LUCA from 10X Technologies."
 # Task 3 Configuration
 CHUNK_SIZE = 600
 CHUNK_OVERLAP = 120
-SIMILARITY_THRESHOLD = 0.28
-REJECTION_RESPONSE = "I don’t know. I can only answer questions related to the school information provided."
+SIMILARITY_THRESHOLD = 0.1  # Lowered for better retrieval
+REJECTION_RESPONSE = "I couldn't find that specific information in the documents provided."
 
 # ==========================================
 # MODEL LOADING
@@ -113,6 +113,46 @@ def call_ollama_non_stream(messages):
     except Exception as e:
         return f"Error communicating with Ollama: {str(e)}"
 
+# Helper to clean text for TTS (remove markdown and emojis)
+def clean_text_for_tts(text):
+    """Remove markdown formatting and emojis for better TTS output"""
+    import re
+    
+    # Remove emojis (Unicode emoji ranges)
+    emoji_pattern = re.compile("["
+        u"\U0001F600-\U0001F64F"  # emoticons
+        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+        u"\U0001F680-\U0001F6FF"  # transport & map symbols
+        u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+        u"\U00002702-\U000027B0"
+        u"\U000024C2-\U0001F251"
+        u"\U0001F900-\U0001F9FF"  # supplemental symbols
+        "]+", flags=re.UNICODE)
+    text = emoji_pattern.sub('', text)
+    
+    # Remove markdown bold/italic markers
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold**
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)      # *italic*
+    text = re.sub(r'__([^_]+)__', r'\1', text)      # __bold__
+    text = re.sub(r'_([^_]+)_', r'\1', text)        # _italic_
+    
+    # Remove markdown headers
+    text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
+    
+    # Remove markdown lists
+    text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+    
+    # Remove code blocks
+    text = re.sub(r'```[^`]*```', '', text)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    
+    # Clean up extra whitespace
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = text.strip()
+    
+    return text
+
 # ==========================================
 # TASK 3: RAG SETUP & DYNAMIC LOADING
 # ==========================================
@@ -178,16 +218,44 @@ def generate_questions_from_text(chunks):
 
 def retrieve_context(query, index, chunks):
     if index is None or not chunks or not embedder: return []
+    
+    # 1. Vector Search
     q_emb = embedder.encode([query], convert_to_numpy=True)
     faiss.normalize_L2(q_emb)
-    D, I = index.search(q_emb, 5)
     
-    docs = []
+    k_vector = 10
+    D, I = index.search(q_emb, k_vector)
+    
+    retrieved_indices = set()
+    debug_info = []
+
+    # Collect Vector Results
     for i, score in zip(I[0], D[0]):
-        # Check bound
         if i < len(chunks) and score >= SIMILARITY_THRESHOLD:
-            docs.append(chunks[i])
-    return docs
+            retrieved_indices.add(i)
+            debug_info.append(f"Vector Match: Chunk {i} (Score: {score:.4f})")
+
+    # 2. Keyword Fallback (Simple string matching)
+    query_words = [w.lower() for w in query.split() if len(w) > 3]
+    
+    if query_words:
+        for idx, chunk in enumerate(chunks):
+            chunk_lower = chunk.lower()
+            matches = sum(1 for w in query_words if w in chunk_lower)
+            if matches >= 1:
+                if idx not in retrieved_indices:
+                    retrieved_indices.add(idx)
+                    debug_info.append(f"Keyword Match: Chunk {idx} (Matches: {matches})")
+    
+    # Debug Print
+    print(f"DEBUG: Query '{query}'")
+    for info in debug_info:
+        print(f"  - {info}")
+        
+    # Convert to sorted list
+    final_indices = sorted(list(retrieved_indices))
+    
+    return [chunks[i] for i in final_indices]
 
 # ==========================================
 # SYSTEM PROMPTS
@@ -265,6 +333,9 @@ def task1_speech_response(audio_path):
     messages = [{"role": "system", "content": TASK1_SYSTEM_PROMPT}, {"role": "user", "content": transcribed}]
     llm_response = call_ollama_non_stream(messages)
 
+    # Clean response for TTS (remove markdown and emojis)
+    tts_text = clean_text_for_tts(llm_response)
+
     # TTS
     async def get_tts(text):
         fd, path = tempfile.mkstemp(suffix=".mp3")
@@ -275,9 +346,9 @@ def task1_speech_response(audio_path):
         except: return None
 
     try:
-        audio_out = asyncio.run(get_tts(llm_response))
+        audio_out = asyncio.run(get_tts(tts_text))
     except RuntimeError:
-        audio_out = asyncio.get_event_loop().run_until_complete(get_tts(llm_response))
+        audio_out = asyncio.get_event_loop().run_until_complete(get_tts(tts_text))
 
     return audio_out, f"**User:** {transcribed}\n\n**AI:** {llm_response}"
 
@@ -305,59 +376,81 @@ def is_identity_question(text):
     print(f"DEBUG Identity Check: '{text}' -> cleaned: '{text_clean}' -> is_identity: {is_identity}")
     return is_identity
 
-def task2_luca_handler(message, history, audio_path):
-    # 1. Input Processing
-    user_input = message
-    transcribed_from_audio = False
-    
-    if audio_path:
-        try:
-            res = whisper_model.transcribe(audio_path)
-            transcribed = res["text"].strip()
-            if transcribed:
-                user_input = transcribed
-                transcribed_from_audio = True
-                print(f"DEBUG: Transcribed audio: '{user_input}'")
-        except Exception as e:
-            return f"Transcription error: {str(e)}", None, None
-    
-    user_input = _force_string(user_input)
+# --- Task 2: LUCA Assistant (Text Chat) ---
+def task2_text_chat(message, history):
+    """Text-based chat with LUCA (streaming)"""
+    user_input = _force_string(message)
     if not user_input:
-        return "Please say or type something.", None, None
-
-    print(f"DEBUG: Processing input: '{user_input}'")
+        yield "Please type something."
+        return
     
-    # 2. Logic & Identity Check (Hardcoded override) - THIS MUST HAPPEN FIRST
+    print(f"DEBUG: Processing text input: '{user_input}'")
+    
+    # Identity Check (Hardcoded override)
     if is_identity_question(user_input):
+        print("DEBUG: Identity question detected! Returning LUCA identity.")
+        yield LUCA_IDENTITY_TEXT
+        return
+    
+    # Standard chat with System Prompt
+    msgs = normalize_history(history)
+    msgs.insert(0, {"role": "system", "content": TASK2_SYSTEM_PROMPT})
+    msgs.append({"role": "user", "content": user_input})
+    
+    try:
+        stream = ollama.chat(model=LLM_MODEL, messages=msgs, stream=True)
+        partial_response = ""
+        for chunk in stream:
+            content = chunk['message']['content']
+            partial_response += content
+            yield partial_response
+    except Exception as e:
+        yield f"Error: {e}"
+
+# --- Task 2: LUCA Assistant (Voice) ---
+def task2_voice_handler(audio_path):
+    """Voice-based interaction with LUCA"""
+    if not audio_path:
+        return None, "No audio detected."
+    
+    try:
+        # STT
+        transcribed = whisper_model.transcribe(audio_path)["text"].strip()
+        print(f"DEBUG: Transcribed audio: '{transcribed}'")
+    except Exception as e:
+        return None, f"Transcription error: {str(e)}"
+    
+    # Identity Check (Hardcoded override)
+    if is_identity_question(transcribed):
         print("DEBUG: Identity question detected! Returning LUCA identity.")
         response_text = LUCA_IDENTITY_TEXT
     else:
         print("DEBUG: Regular question, calling LLM with LUCA Prompt...")
-        # Standard chat with System Prompt
-        msgs = normalize_history(history)
-        msgs.insert(0, {"role": "system", "content": TASK2_SYSTEM_PROMPT})
-        msgs.append({"role": "user", "content": user_input})
-        response_text = call_ollama_non_stream(msgs)
-
-    # 3. Output Processing (TTS)
+        messages = [
+            {"role": "system", "content": TASK2_SYSTEM_PROMPT},
+            {"role": "user", "content": transcribed}
+        ]
+        response_text = call_ollama_non_stream(messages)
+    
+    # Clean response for TTS (remove markdown and emojis)
+    tts_text = clean_text_for_tts(response_text)
+    
+    # TTS
     async def get_tts(text):
         fd, path = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
         try:
             await edge_tts.Communicate(text, TTS_VOICE).save(path)
             return path
-        except: return None
-
-    try:
-        audio_out = asyncio.run(get_tts(response_text))
-    except RuntimeError:
-        audio_out = asyncio.get_event_loop().run_until_complete(get_tts(response_text))
+        except:
+            return None
     
-    # If transcribed from audio, prepend indicator to response
-    if transcribed_from_audio:
-        response_text = f"🎤 *Transcribed: \"{user_input}\"*\n\n{response_text}"
-        
-    return response_text, audio_out
+    try:
+        audio_out = asyncio.run(get_tts(tts_text))
+    except RuntimeError:
+        audio_out = asyncio.get_event_loop().run_until_complete(get_tts(tts_text))
+    
+    return audio_out, f"**User:** {transcribed}\n\n**LUCA:** {response_text}"
 
 
 # --- Task 3: School RAG ---
@@ -402,14 +495,23 @@ def task3_rag_response(message, history, rag_state):
         yield REJECTION_RESPONSE
         return
 
-    context_str = "\n\n".join([f"Excerpt: {d}" for d in docs])
+    context_str = "\n\n".join([f"Excerpt {idx+1}:\n{d}" for idx, d in enumerate(docs)])
+    print(f"DEBUG: LLM Context ({len(docs)} chunks)\n")
+
     prompt = (
-        "You are a school assistant provided with the following school information excerpts.\n"
-        "Data may include tables, lists, or structured records. Interpret them contextually.\n"
-        "Answer the question using strictly ONLY the information from these excerpts.\n"
-        "If the answer is not in the excerpts, say 'I don't know'.\n\n"
+        "You are a helpful school assistant. Read the following excerpts CAREFULLY.\n"
+        "Answer the user's question using ONLY the information from these excerpts.\n\n"
+        "IMPORTANT RULES:\n"
+        "- Read each excerpt carefully before answering\n"
+        "- Do NOT mix information from different sections\n"
+        "- If asked about attendance, look for 'Attendance' or '75%'\n"
+        "- If asked about mobile phones, look for 'Mobile phones' or 'phone'\n"
+        "- If asked about fees, look for 'Fee Structure' or specific fee amounts\n"
+        "- If the exact answer is not in the excerpts, say 'I don't have that information'\n"
+        "- Be precise and quote the relevant section when possible\n\n"
         f"Excerpts:\n{context_str}\n\n"
-        f"Question: {message}"
+        f"Question: {message}\n\n"
+        "Answer (be specific and accurate):"
     )
     
     # Use streaming
@@ -465,19 +567,23 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
         # TASK 2
         with gr.Tab("Task 2: LUCA Voice Assistant"):
             gr.Markdown("### LUCA Voice Assistant")
-            gr.Markdown("Objective: Voice-enabled assistant identifying as 'LUCA from 10X Technologies'. Supports both Text & Voice input.")
+            gr.Markdown("Objective: Voice-enabled assistant identifying as 'LUCA from 10X Technologies'.")
             
-            gr.ChatInterface(
-                fn=task2_luca_handler,
-                additional_inputs=[
-                    gr.Audio(sources=["microphone", "upload"], type="filepath", label="Voice Input (Optional)")
-                ],
-                additional_outputs=[
-                    gr.Audio(label="LUCA Voice Reply", autoplay=True)
-                ],
-                title="Talk to LUCA",
-                description="Ask 'Who are you?' to verify identity."
-            )
+            with gr.Accordion("Text Chat with LUCA", open=True):
+                gr.ChatInterface(
+                    task2_text_chat,
+                    title="Chat with LUCA",
+                    description="Ask 'Who are you?' to verify identity."
+                )
+            
+            with gr.Accordion("Voice Interaction with LUCA", open=False):
+                with gr.Row():
+                    t2_audio_in = gr.Audio(sources=["microphone", "upload"], type="filepath", label="Speak to LUCA")
+                    t2_audio_out = gr.Audio(label="LUCA's Voice Response", autoplay=True)
+                t2_transcript = gr.Markdown(label="Conversation")
+                t2_voice_btn = gr.Button("Send Voice Message")
+                
+                t2_voice_btn.click(task2_voice_handler, t2_audio_in, [t2_audio_out, t2_transcript])
 
         # TASK 3
         with gr.Tab("Task 3: School AI (RAG)"):
