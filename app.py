@@ -55,14 +55,16 @@ except Exception as e:
 # ==========================================
 # UTILS & HELPERS
 # ==========================================
+# UTILS & HELPERS
+# ==========================================
 def _force_string(content):
     if content is None: 
         return ""
     if isinstance(content, str): 
         return content.strip()
-    # Handle Gradio's multimodal format which might be a list of dicts or a dict
+    
+    # Handle Gradio's multimodal format (list of dicts)
     if isinstance(content, list):
-        # Join text parts if it's a list of semantic parts
         text_parts = []
         for part in content:
             if isinstance(part, dict) and 'text' in part:
@@ -71,8 +73,11 @@ def _force_string(content):
                text_parts.append(part)
         if text_parts:
             return " ".join(text_parts).strip()
-    if isinstance(content, dict) and 'text' in content:
-        return str(content['text']).strip()
+            
+    # Handle dict (extract text/content)
+    if isinstance(content, dict):
+        if 'text' in content: return str(content['text']).strip()
+        if 'content' in content: return str(content['content']).strip()
         
     # Fallback
     return str(content).strip()
@@ -80,17 +85,24 @@ def _force_string(content):
 def normalize_history(history):
     messages = []
     if not history: return messages
+    
+    print(f"DEBUG: Raw History cleanup: {str(history)[:100]}...") # Debug print
+    
     for item in history:
+        # Format: [[user, bot], ...]
         if isinstance(item, (list, tuple)) and len(item) == 2:
-            u, a = _force_string(item[0]), _force_string(item[1])
+            u = _force_string(item[0])
+            a = _force_string(item[1])
             if u: messages.append({"role": "user", "content": u})
             if a: messages.append({"role": "assistant", "content": a})
+            
+        # Format: {'role': 'user', 'content': ...}
         elif isinstance(item, dict):
-            # Deep clean the dictionary content
             clean_item = item.copy()
             if 'content' in clean_item:
                 clean_item['content'] = _force_string(clean_item['content'])
             messages.append(clean_item)
+            
     return messages
 
 # Helper for non-streaming calls (Tasks 2 & 3)
