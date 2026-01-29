@@ -114,17 +114,23 @@ def call_ollama_non_stream(messages):
         return f"Error communicating with Ollama: {str(e)}"
 
 # ==========================================
-# TASK 3: RAG SETUP
+# TASK 3: RAG SETUP & DYNAMIC LOADING
 # ==========================================
-vector_store = None
-
-def load_and_process_pdf(pdf_path):
+def create_vector_store(pdf_path):
+    """Creates a vector store from a PDF file."""
     if not os.path.exists(pdf_path):
         print(f"PDF local file not found: {pdf_path}")
-        return None
+        return None, None
     
     print(f"Processing PDF: {pdf_path}")
     try:
+        # Check size for uploaded files (skip check for default if needed, or handle in UI)
+        file_size = os.path.getsize(pdf_path)
+        if file_size > 2 * 1024 * 1024:  # 2MB limit
+             # For default file, we might ignore this, but for upload strict check
+             print("Warning: File larger than 2MB")
+             pass 
+
         with open(pdf_path, "rb") as f:
             reader = PyPDF2.PdfReader(f)
             text = "".join([p.extract_text() or "" for p in reader.pages])
@@ -133,31 +139,54 @@ def load_and_process_pdf(pdf_path):
         splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
         chunks = splitter.split_text(text)
         
-        if not chunks: return None
+        if not chunks: return None, None
         
         embeddings = embedder.encode(chunks, show_progress_bar=True, convert_to_numpy=True)
         index = faiss.IndexFlatIP(embeddings.shape[1])
         faiss.normalize_L2(embeddings)
         index.add(embeddings)
         
-        return {"chunks": chunks, "index": index}
+        return index, chunks
     except Exception as e:
-        print(f"RAG Error: {e}")
-        return None
+        print(f"Error processing PDF: {e}")
+        return None, None
 
-if embedder:
-    vector_store = load_and_process_pdf(PDF_PATH)
+# Initialize default store
+default_index, default_chunks = create_vector_store(DEFAULT_PDF_PATH)
 
-def retrieve_context(query):
-    if not vector_store or not embedder: return []
+def generate_questions_from_text(chunks):
+    """Generate 5 suggested questions based on the document content."""
+    if not chunks: return []
+    
+    # Take a sample of text (first 2000 chars)
+    context = " ".join(chunks[:3])[:2000]
+    
+    prompt = f"""Based on the following text, generate 5 short, relevant questions that a user might ask. 
+    Format them as a simple list. Do not number them. Just 5 questions, one per line.
+    
+    Text: {context}"""
+    
+    try:
+        response = call_ollama_non_stream([{"role": "user", "content": prompt}])
+        # Process response into list
+        questions = [q.strip("- ").strip() for q in response.split("\n") if q.strip() and "?" in q]
+        return questions[:5]
+    except:
+        return ["What is this document about?", "Summarize the key points."]
+        
+
+
+def retrieve_context(query, index, chunks):
+    if index is None or not chunks or not embedder: return []
     q_emb = embedder.encode([query], convert_to_numpy=True)
     faiss.normalize_L2(q_emb)
-    D, I = vector_store["index"].search(q_emb, 5)
+    D, I = index.search(q_emb, 5)
     
     docs = []
     for i, score in zip(I[0], D[0]):
-        if score >= SIMILARITY_THRESHOLD:
-            docs.append(vector_store["chunks"][i])
+        # Check bound
+        if i < len(chunks) and score >= SIMILARITY_THRESHOLD:
+            docs.append(chunks[i])
     return docs
 
 # ==========================================
@@ -295,14 +324,43 @@ def task2_luca_handler(message, history, audio_path):
 
 
 # --- Task 3: School RAG ---
-def task3_rag_response(message, history):
-    if not vector_store:
-         # Fallback default behavior
-        yield "School PDF not loaded or processed correctly."
+def process_upload(file_path):
+    if not file_path:
+        # Revert to default
+        idx, chk = default_index, default_chunks
+        questions = generate_questions_from_text(chk)
+        # Return state and default samples
+        samples = [[q] for q in questions]
+        return (idx, chk), gr.Dataset(samples=samples), ""
+    
+    # Check size
+    if os.path.getsize(file_path) > 2 * 1024 * 1024:
+        # Too big
+        return None, gr.Dataset(), "Error: File size exceeds 2MB limit."
+
+    idx, chk = create_vector_store(file_path)
+    if not idx:
+        return None, gr.Dataset(), "Error processing PDF."
+    
+    # Generate questions
+    questions = generate_questions_from_text(chk)
+    samples = [[q] for q in questions]
+    
+    return (idx, chk), gr.Dataset(samples=samples), "PDF Processed Successfully!"
+
+def task3_rag_response(message, history, rag_state):
+    # Determine context: Uploaded or Default
+    if rag_state:
+        index, chunks = rag_state
+    else:
+        index, chunks = default_index, default_chunks
+
+    if not index:
+        yield "PDF not loaded or processed correctly."
         return
 
     message = _force_string(message)
-    docs = retrieve_context(message)
+    docs = retrieve_context(message, index, chunks)
     if not docs:
         yield REJECTION_RESPONSE
         return
@@ -337,6 +395,7 @@ def task3_clear_chat():
 custom_css = """
 .task-header { padding: 1rem; background: linear-gradient(to right, #2b6cb0, #2c5282); color: white; border-radius: 8px; margin-bottom: 1rem; text-align: center; }
 .introduction { font-size: 1.1em; margin-bottom: 1em; }
+footer {visibility: hidden !important; display: none !important;}
 """
 
 with gr.Blocks(title="AI Intern Assignments") as demo:
@@ -387,51 +446,58 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
             gr.Markdown("### RAG-Based School Assistant")
             gr.Markdown("Objective: Answer domain-specific questions from the School PDF. Rejects unrelated queries.")
             
-            t3_chat = gr.Chatbot(height=500, label="School Bot")
-            t3_msg = gr.Textbox(label="Question", placeholder="Ask about school fees, timings, etc.")
+            # State for storing vector store (index, chunks)
+            rag_state = gr.State()
+            
+            with gr.Row():
+                t3_file = gr.File(label="Upload Custom PDF (Max 2MB)", file_types=[".pdf"], file_count="single")
+                t3_status = gr.Markdown("")
+
+            t3_chat = gr.Chatbot(height=400, label="School Bot")
+            
+            # Dynamic suggestions using Dataset
+            # Initial samples from default text
+            init_qs = generate_questions_from_text(default_chunks)
+            t3_examples = gr.Dataset(components=[t3_msg], label="Suggested Questions", samples=[[q] for q in init_qs])
+            
+            t3_msg = gr.Textbox(label="Question", placeholder="Ask about the document...")
+            
             with gr.Row():
                 t3_sub = gr.Button("Ask")
                 t3_clr = gr.Button("Clear Chat")
             
-            gr.Examples(
-                examples=[
-                    "What are the school timings?",
-                    "What is the fee structure?",
-                    "Tell me about the sports facilities.",
-                    "Is there a bus service?",
-                    "What are the admission requirements?",
-                    "Who acts as the guide for the students?",
-                    "Who is the principal?",
-                    "Do you offer extracurricular activities?"
-                ],
-                inputs=t3_msg,
-                label="Suggested Questions"
+            # Handle File Upload
+            t3_file.change(
+                process_upload, 
+                inputs=[t3_file], 
+                outputs=[rag_state, t3_examples, t3_status]
             )
             
+            # Handle Click on Example
+            def on_example_click(x):
+                return x[0]
+            
+            t3_examples.click(on_example_click, inputs=[t3_examples], outputs=[t3_msg])
+
             # Handler for chatbot
-            def respond_t3(msg, hist):
+            def respond_t3(msg, hist, state):
                 if not msg.strip(): 
                     return hist
                 
-                # Ensure hist is a list
-                if hist is None:
-                    hist = []
+                if hist is None: hist = []
                 
-                # Collect full response from generator
                 full_response = ""
-                for partial in task3_rag_response(msg, hist):
+                for partial in task3_rag_response(msg, hist, state):
                     full_response = partial
                 
-                # Append to history in Dictionary format (as requested by error message)
-                # But do NOT use type="messages" in constructor (as requested by previous error)
                 new_hist = hist + [
                     {"role": "user", "content": msg},
                     {"role": "assistant", "content": full_response}
                 ]
                 return new_hist
             
-            t3_msg.submit(respond_t3, [t3_msg, t3_chat], [t3_chat])
-            t3_sub.click(respond_t3, [t3_msg, t3_chat], [t3_chat])
+            t3_msg.submit(respond_t3, [t3_msg, t3_chat, rag_state], [t3_chat])
+            t3_sub.click(respond_t3, [t3_msg, t3_chat, rag_state], [t3_chat])
             t3_clr.click(lambda: [], None, [t3_chat])
 
 if __name__ == "__main__":
