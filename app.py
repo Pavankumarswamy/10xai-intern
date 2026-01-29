@@ -223,13 +223,17 @@ def is_identity_question(text):
 def task2_luca_handler(message, history, audio_path):
     # 1. Input Processing
     user_input = message
+    transcribed_from_audio = False
+    
     if audio_path:
         try:
             res = whisper_model.transcribe(audio_path)
             transcribed = res["text"].strip()
             if transcribed:
-                user_input = transcribed # Audio takes precedence if present? Or fallback.
-        except: pass
+                user_input = transcribed
+                transcribed_from_audio = True
+        except Exception as e:
+            return f"Transcription error: {str(e)}", None, None
     
     user_input = _force_string(user_input)
     if not user_input:
@@ -257,6 +261,10 @@ def task2_luca_handler(message, history, audio_path):
         audio_out = asyncio.run(get_tts(response_text))
     except RuntimeError:
         audio_out = asyncio.get_event_loop().run_until_complete(get_tts(response_text))
+    
+    # If transcribed from audio, prepend indicator to response
+    if transcribed_from_audio:
+        response_text = f"🎤 *Transcribed: \"{user_input}\"*\n\n{response_text}"
         
     return response_text, audio_out, None
 
