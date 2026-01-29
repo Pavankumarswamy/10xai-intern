@@ -56,8 +56,25 @@ except Exception as e:
 # UTILS & HELPERS
 # ==========================================
 def _force_string(content):
-    if content is None: return ""
-    if isinstance(content, str): return content.strip()
+    if content is None: 
+        return ""
+    if isinstance(content, str): 
+        return content.strip()
+    # Handle Gradio's multimodal format which might be a list of dicts or a dict
+    if isinstance(content, list):
+        # Join text parts if it's a list of semantic parts
+        text_parts = []
+        for part in content:
+            if isinstance(part, dict) and 'text' in part:
+               text_parts.append(str(part['text']))
+            elif isinstance(part, str):
+               text_parts.append(part)
+        if text_parts:
+            return " ".join(text_parts).strip()
+    if isinstance(content, dict) and 'text' in content:
+        return str(content['text']).strip()
+        
+    # Fallback
     return str(content).strip()
 
 def normalize_history(history):
@@ -69,7 +86,11 @@ def normalize_history(history):
             if u: messages.append({"role": "user", "content": u})
             if a: messages.append({"role": "assistant", "content": a})
         elif isinstance(item, dict):
-            messages.append(item)
+            # Deep clean the dictionary content
+            clean_item = item.copy()
+            if 'content' in clean_item:
+                clean_item['content'] = _force_string(clean_item['content'])
+            messages.append(clean_item)
     return messages
 
 # Helper for non-streaming calls (Tasks 2 & 3)
@@ -136,7 +157,8 @@ def task1_text_response(message, history):
     messages = normalize_history(history)
     # Add system prompt for Task 1
     messages.insert(0, {"role": "system", "content": "You are a helpful AI assistant."})
-    messages.append({"role": "user", "content": message})
+    # Ensure message is a clean string
+    messages.append({"role": "user", "content": _force_string(message)})
     
     try:
         stream = ollama.chat(model=LLM_MODEL, messages=messages, stream=True)
@@ -147,6 +169,7 @@ def task1_text_response(message, history):
             yield partial_response
     except Exception as e:
         yield f"Error: {str(e)}"
+    return
 
 # Re-use TTS logic for Task 1 speech demo
 def task1_speech_response(audio_path):
@@ -160,7 +183,8 @@ def task1_speech_response(audio_path):
         return None, f"Transcription error: {e}"
 
     # 2. Pipeline: Text -> LLM
-    llm_response = call_ollama_non_stream([{"role": "user", "content": user_text}])
+    # call_ollama_non_stream expects messages list; ensure content is string
+    llm_response = call_ollama_non_stream([{"role": "user", "content": _force_string(user_text)}])
 
     # 3. Pipeline: LLM -> Speech
     async def get_tts(text):
@@ -195,6 +219,7 @@ def task2_luca_handler(message, history, audio_path):
                 user_input = transcribed # Audio takes precedence if present? Or fallback.
         except: pass
     
+    user_input = _force_string(user_input)
     if not user_input:
         return "Please say or type something.", None, None
 
@@ -231,6 +256,7 @@ def task3_rag_response(message, history):
         yield "School PDF not loaded or processed correctly."
         return
 
+    message = _force_string(message)
     docs = retrieve_context(message)
     if not docs:
         yield REJECTION_RESPONSE
