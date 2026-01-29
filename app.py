@@ -407,9 +407,12 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
                 for partial in task3_rag_response(msg, hist):
                     full_response = partial
                 
-                # Append to history in tuple format: [[user, bot], ...]
-                # This is the standard Gradio format compatible with all versions
-                new_hist = hist + [[msg, full_response]]
+                # Append to history in Dictionary format (as requested by error message)
+                # But do NOT use type="messages" in constructor (as requested by previous error)
+                new_hist = hist + [
+                    {"role": "user", "content": msg},
+                    {"role": "assistant", "content": full_response}
+                ]
                 return new_hist
             
             t3_msg.submit(respond_t3, [t3_msg, t3_chat], [t3_chat])
