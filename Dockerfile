@@ -3,36 +3,34 @@ FROM python:3.10-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# 1. Install system dependencies & Ollama
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
     zstd \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Ollama
 RUN curl -fsSL https://ollama.com/install.sh | sh
 
-# Copy requirements and install Python dependencies (Cached)
-COPY requirements.txt .
-# Use BuildKit cache mount to speed up repeated installs
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt
-
-# Pre-download the LLM model during build to speed up startup
-# We start the server, pull the model to /root/.ollama, and then it is saved in the image layer.
+# 2. Pre-download the LLM model (Cached Layer)
+# Placed BEFORE python requirements to prevent re-downloading when requirements change
 RUN ollama serve & \
     sleep 5 && \
     ollama pull gemma3:1b
 
-# Copy application code and assets
+# 3. Install Python dependencies
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+
+# 4. Copy application code and assets
 COPY app.py .
 COPY school_information.pdf .
 
 # Expose Gradio port
 EXPOSE 7860
 
-# Startup script (Model is already baked in)
+# Startup script
 RUN echo '#!/bin/bash\n\
 ollama serve & \n\
 sleep 5 \n\
