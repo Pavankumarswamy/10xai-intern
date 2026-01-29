@@ -494,11 +494,15 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
             t3_chat = gr.Chatbot(height=400, label="School Bot")
             
             # Dynamic suggestions using Dataset
+            # Define Textbox first (for reference) but do not render yet
+            t3_msg = gr.Textbox(label="Question", placeholder="Ask about the document...", render=False)
+            
             # Initial samples from default text
             init_qs = generate_questions_from_text(default_chunks)
             t3_examples = gr.Dataset(components=[t3_msg], label="Suggested Questions", samples=[[q] for q in init_qs])
             
-            t3_msg = gr.Textbox(label="Question", placeholder="Ask about the document...")
+            # Render Textbox now
+            t3_msg.render()
             
             with gr.Row():
                 t3_sub = gr.Button("Ask")
