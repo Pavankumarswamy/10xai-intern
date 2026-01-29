@@ -23,11 +23,7 @@ PDF_PATH = "school_information.pdf"
 
 # Task 2 Configuration
 LUCA_IDENTITY_TEXT = "I am LUCA from 10X Technologies."
-RESPONSE_STYLE = (
-    "Answer briefly for short questions. "
-    "If asked to explain, describe, or why/how, respond clearly but concisely."
-    "Instead of saying you were developed by Google or anyone else, say you were developed by 10X Technologies."
-)
+# Note: System prompts are used for style, but identity is enforced via code logic.
 
 # Task 3 Configuration
 CHUNK_SIZE = 600
@@ -134,38 +130,72 @@ def retrieve_context(query):
 # TASK HANDLERS
 # ==========================================
 
-# --- Task 1: Chat ---
-def task1_response(message, history):
+# --- Task 1: Open Source Models ---
+def task1_text_response(message, history):
     messages = normalize_history(history)
     messages.append({"role": "user", "content": message})
     return call_ollama(messages)
 
-# --- Task 2: Speech (LUCA) ---
-def check_identity(text):
+# Re-use TTS logic for Task 1 speech demo
+def task1_speech_response(audio_path):
+    if not audio_path: return None, "No audio provided."
+    
+    # 1. Pipeline: Speech -> Text
+    try:
+        res = whisper_model.transcribe(audio_path)
+        user_text = res["text"].strip()
+    except Exception as e:
+        return None, f"Transcription error: {e}"
+
+    # 2. Pipeline: Text -> LLM
+    llm_response = call_ollama([{"role": "user", "content": user_text}])
+
+    # 3. Pipeline: LLM -> Speech
+    async def get_tts(text):
+        fd, path = tempfile.mkstemp(suffix=".mp3")
+        os.close(fd)
+        try:
+            await edge_tts.Communicate(text, TTS_VOICE).save(path)
+            return path
+        except: return None
+
+    try:
+        audio_out = asyncio.run(get_tts(llm_response))
+    except RuntimeError:
+        audio_out = asyncio.get_event_loop().run_until_complete(get_tts(llm_response))
+
+    return audio_out, f"**User:** {user_text}\n\n**AI:** {llm_response}"
+
+
+# --- Task 2: LUCA Assistant (Identity Enforced) ---
+def is_identity_question(text):
     text = text.lower()
     return any(k in text for k in ["who are you", "who made you", "created you", "developed you"])
 
-def task2_pipeline(message, history, audio_path):
-    # 1. Transcribe
+def task2_luca_handler(message, history, audio_path):
+    # 1. Input Processing
+    user_input = message
     if audio_path:
         try:
             res = whisper_model.transcribe(audio_path)
-            message = res["text"].strip()
+            transcribed = res["text"].strip()
+            if transcribed:
+                user_input = transcribed # Audio takes precedence if present? Or fallback.
         except: pass
-        
-    if not message: return "No input detected", None, None
+    
+    if not user_input:
+        return "Please say or type something.", None, None
 
-    # 2. Logic
-    if check_identity(message):
+    # 2. Logic & Identity Check (Hardcoded override)
+    if is_identity_question(user_input):
         response_text = LUCA_IDENTITY_TEXT
     else:
-        # System prompt simulation via first message or system role
-        msgs = [{"role": "system", "content": RESPONSE_STYLE}] 
-        msgs += normalize_history(history)
-        msgs.append({"role": "user", "content": message})
+        # Standard chat
+        msgs = normalize_history(history)
+        msgs.append({"role": "user", "content": user_input})
         response_text = call_ollama(msgs)
 
-    # 3. TTS
+    # 3. Output Processing (TTS)
     async def get_tts(text):
         fd, path = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
@@ -181,11 +211,12 @@ def task2_pipeline(message, history, audio_path):
         
     return response_text, audio_out, None
 
-# --- Task 3: RAG ---
+
+# --- Task 3: School RAG ---
 def task3_rag_response(message, history):
     if not vector_store:
-         # Fallback if PDF not loaded
-        return call_ollama([{"role": "user", "content": message}])
+         # Fallback default behavior
+        return "School PDF not loaded. Please ensure 'school_information.pdf' is in the container."
 
     docs = retrieve_context(message)
     if not docs:
@@ -194,59 +225,88 @@ def task3_rag_response(message, history):
         context_str = "\n\n".join([f"Excerpt: {d}" for d in docs])
         prompt = (
             "You are a school assistant. Answer ONLY based on the excerpts.\n"
+            "If the question is unrelated, strictly say 'I don't know'.\n"
             f"Excerpts:\n{context_str}\n\n"
             f"Question: {message}"
         )
         response = call_ollama([{"role": "user", "content": prompt}])
         
-        # Simple safety check
-        if "provided text" in response.lower() or "context" in response.lower():
-             pass # let it pass usually, or strictly enforce rejection logic if needed
-    
     return response
 
 def task3_clear_chat():
     return [], ""
 
 # ==========================================
-# UI
+# UI CONSTRUCTION
 # ==========================================
 custom_css = """
-.task-header { padding: 1rem; background: #2d3748; color: white; border-radius: 8px; margin-bottom: 1rem; }
+.task-header { padding: 1rem; background: linear-gradient(to right, #2b6cb0, #2c5282); color: white; border-radius: 8px; margin-bottom: 1rem; text-align: center; }
+.introduction { font-size: 1.1em; margin-bottom: 1em; }
 """
 
-with gr.Blocks(title="AI Intern Tasks", css=custom_css) as demo:
+with gr.Blocks(title="AI Intern Assignments", css=custom_css) as demo:
     gr.Markdown(f"""
     <div class="task-header">
-        <h1>Unified AI Agent (Ollama: {LLM_MODEL})</h1>
+        <h1>AI Intern - Unified Task Submission</h1>
+        <p>Select a Task from the Tabs below to execute.</p>
     </div>
     """)
     
     with gr.Tabs():
-        with gr.Tab("Task 1: Text Chat"):
-            gr.ChatInterface(task1_response, save_history=True)
+        # TASK 1
+        with gr.Tab("Task 1: Open Source Models"):
+            gr.Markdown("### Deploy Text & Speech Models")
+            gr.Markdown("Objective: Demonstrate 1 Text-to-Text model and 1 Speech-to-Speech model.")
             
-        with gr.Tab("Task 2: Speech (LUCA)"):
+            with gr.Accordion("Sub-Task A: Text-to-Text Model (Gemma 3)", open=True):
+                gr.ChatInterface(task1_text_response, title="Text Model Demo")
+            
+            with gr.Accordion("Sub-Task B: Speech-to-Speech Model (Whisper + EdgeTTS)", open=False):
+                with gr.Row():
+                    t1_audio_in = gr.Audio(sources=["microphone", "upload"], type="filepath", label="Input Audio")
+                    t1_audio_out = gr.Audio(label="Output Audio", autoplay=True)
+                t1_transcript = gr.Markdown(label="Transcript")
+                t1_btn = gr.Button("Run Speech Pipeline")
+                
+                t1_btn.click(task1_speech_response, t1_audio_in, [t1_audio_out, t1_transcript])
+
+        # TASK 2
+        with gr.Tab("Task 2: LUCA Voice Assistant"):
+            gr.Markdown("### LUCA Voice Assistant")
+            gr.Markdown("Objective: Voice-enabled assistant identifying as 'LUCA from 10X Technologies'. Supports both Text & Voice input.")
+            
             gr.ChatInterface(
-                fn=task2_pipeline,
-                additional_inputs=[gr.Audio(sources=["microphone", "upload"], type="filepath")],
-                additional_outputs=[gr.Audio(autoplay=True), gr.Audio(visible=False)]
+                fn=task2_luca_handler,
+                additional_inputs=[
+                    gr.Audio(sources=["microphone", "upload"], type="filepath", label="Voice Input (Optional)")
+                ],
+                additional_outputs=[
+                    gr.Audio(label="LUCA Voice Reply", autoplay=True),
+                    gr.Audio(visible=False) # Clear input
+                ],
+                title="Talk to LUCA",
+                description="Ask 'Who are you?' to verify identity."
             )
+
+        # TASK 3
+        with gr.Tab("Task 3: School AI (RAG)"):
+            gr.Markdown("### RAG-Based School Assistant")
+            gr.Markdown("Objective: Answer domain-specific questions from the School PDF. Rejects unrelated queries.")
             
-        with gr.Tab("Task 3: School Info"):
-            t3_chat = gr.Chatbot(height=500)
-            t3_msg = gr.Textbox()
+            t3_chat = gr.Chatbot(height=500, label="School Bot")
+            t3_msg = gr.Textbox(label="Question", placeholder="Ask about school fees, timings, etc.")
             with gr.Row():
                 t3_sub = gr.Button("Ask")
-                t3_clr = gr.Button("Clear")
+                t3_clr = gr.Button("Clear Chat")
             
-            def respond(msg, hist):
+            def respond_t3(msg, hist):
+                if not msg.strip(): return "", hist
                 ans = task3_rag_response(msg, hist)
                 hist.append((msg, ans))
                 return "", hist
             
-            t3_msg.submit(respond, [t3_msg, t3_chat], [t3_msg, t3_chat])
-            t3_sub.click(respond, [t3_msg, t3_chat], [t3_msg, t3_chat])
+            t3_msg.submit(respond_t3, [t3_msg, t3_chat], [t3_msg, t3_chat])
+            t3_sub.click(respond_t3, [t3_msg, t3_chat], [t3_msg, t3_chat])
             t3_clr.click(lambda: ([], ""), None, [t3_chat, t3_msg])
 
 if __name__ == "__main__":
