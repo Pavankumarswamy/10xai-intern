@@ -291,7 +291,7 @@ def task2_luca_handler(message, history, audio_path):
     if transcribed_from_audio:
         response_text = f"🎤 *Transcribed: \"{user_input}\"*\n\n{response_text}"
         
-    return response_text, audio_out, None
+    return response_text, audio_out
 
 
 # --- Task 3: School RAG ---
@@ -376,8 +376,7 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
                     gr.Audio(sources=["microphone", "upload"], type="filepath", label="Voice Input (Optional)")
                 ],
                 additional_outputs=[
-                    gr.Audio(label="LUCA Voice Reply", autoplay=True),
-                    gr.Audio(visible=False) # Clear input
+                    gr.Audio(label="LUCA Voice Reply", autoplay=True)
                 ],
                 title="Talk to LUCA",
                 description="Ask 'Who are you?' to verify identity."
