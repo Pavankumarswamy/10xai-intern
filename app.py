@@ -387,13 +387,13 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
             gr.Markdown("### RAG-Based School Assistant")
             gr.Markdown("Objective: Answer domain-specific questions from the School PDF. Rejects unrelated queries.")
             
-            t3_chat = gr.Chatbot(height=500, label="School Bot")
+            t3_chat = gr.Chatbot(height=500, label="School Bot", type="messages")
             t3_msg = gr.Textbox(label="Question", placeholder="Ask about school fees, timings, etc.")
             with gr.Row():
                 t3_sub = gr.Button("Ask")
                 t3_clr = gr.Button("Clear Chat")
             
-            # Generator wrapper for chatbot
+            # Handler for chatbot
             def respond_t3(msg, hist):
                 if not msg.strip(): 
                     return hist
@@ -402,15 +402,18 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
                 if hist is None:
                     hist = []
                 
-                # Stream response
+                # Collect full response from generator
                 full_response = ""
                 for partial in task3_rag_response(msg, hist):
                     full_response = partial
-                    # Yield updated history with streaming response
-                    yield hist + [[msg, partial]]
                 
-                # Final yield with complete response
-                return hist + [[msg, full_response]]
+                # Append to history in messages format
+                new_hist = hist + [
+                    {"role": "user", "content": msg},
+                    {"role": "assistant", "content": full_response}
+                ]
+                
+                return new_hist
             
             t3_msg.submit(respond_t3, [t3_msg, t3_chat], [t3_chat])
             t3_sub.click(respond_t3, [t3_msg, t3_chat], [t3_chat])
