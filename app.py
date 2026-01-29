@@ -396,20 +396,26 @@ with gr.Blocks(title="AI Intern Assignments") as demo:
             
             # Generator wrapper for chatbot
             def respond_t3(msg, hist):
-                if not msg.strip(): yield "", hist; return
+                if not msg.strip(): 
+                    return hist
                 
-                # Append user message first
-                hist.append((msg, ""))
-                yield "", hist
+                # Ensure hist is a list
+                if hist is None:
+                    hist = []
                 
                 # Stream response
+                full_response = ""
                 for partial in task3_rag_response(msg, hist):
-                    hist[-1] = (msg, partial)
-                    yield "", hist
+                    full_response = partial
+                    # Yield updated history with streaming response
+                    yield hist + [[msg, partial]]
+                
+                # Final yield with complete response
+                return hist + [[msg, full_response]]
             
-            t3_msg.submit(respond_t3, [t3_msg, t3_chat], [t3_msg, t3_chat])
-            t3_sub.click(respond_t3, [t3_msg, t3_chat], [t3_msg, t3_chat])
-            t3_clr.click(lambda: ([], ""), None, [t3_chat, t3_msg])
+            t3_msg.submit(respond_t3, [t3_msg, t3_chat], [t3_chat])
+            t3_sub.click(respond_t3, [t3_msg, t3_chat], [t3_chat])
+            t3_clr.click(lambda: [], None, [t3_chat])
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860, css=custom_css)
