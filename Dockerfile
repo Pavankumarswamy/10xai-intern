@@ -32,6 +32,10 @@ RUN ollama serve & \
     sleep 5 && \
     ollama pull gemma3:1b
 
+# Pre-install Heavy Python Dependencies (Cached Layer)
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir openai-whisper sentence-transformers
+
 # Install Python requirements
 # Add local bin to PATH for pip installs
 ENV PATH="/home/user/.local/bin:$PATH"
