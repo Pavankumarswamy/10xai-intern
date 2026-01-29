@@ -405,6 +405,7 @@ def task3_rag_response(message, history, rag_state):
     context_str = "\n\n".join([f"Excerpt: {d}" for d in docs])
     prompt = (
         "You are a school assistant provided with the following school information excerpts.\n"
+        "Data may include tables, lists, or structured records. Interpret them contextually.\n"
         "Answer the question using strictly ONLY the information from these excerpts.\n"
         "If the answer is not in the excerpts, say 'I don't know'.\n\n"
         f"Excerpts:\n{context_str}\n\n"
